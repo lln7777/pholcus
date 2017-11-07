@@ -174,6 +174,11 @@ func (self *Matrix) DoHistory(req *request.Request, ok bool) bool {
 	return false
 }
 
+// 判断历史记录中是否存在，如果不存在同时写入历史记录
+func (self *Matrix) CheckHistory(req *request.Request) bool {
+	return self.history.UpsertSuccess(req.Unique())
+}
+
 func (self *Matrix) CanStop() bool {
 	if sdl.checkStatus(status.STOP) {
 		return true

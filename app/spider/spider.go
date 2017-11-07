@@ -254,6 +254,11 @@ func (self *Spider) DoHistory(req *request.Request, ok bool) bool {
 	return self.reqMatrix.DoHistory(req, ok)
 }
 
+// 判断历史记录中是否存在，如果不存在同时写入历史记录
+func (self *Spider) CheckHistory(req *request.Request) bool {
+	return self.reqMatrix.CheckHistory(req)
+}
+
 func (self *Spider) RequestPush(req *request.Request) {
 	self.reqMatrix.Push(req)
 }
