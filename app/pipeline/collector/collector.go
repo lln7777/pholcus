@@ -100,7 +100,8 @@ func (self *Collector) Start() {
 				self.dataDocker = append(self.dataDocker, data)
 
 				// 未达到设定的分批量时继续收集数据
-				if len(self.dataDocker) < cache.Task.DockerCap {
+				// 如果URL时手动加入系统中的，则立即输出
+				if self.Spider.AllowDelayDumpData(data["Url"].(string)) && len(self.dataDocker) < cache.Task.DockerCap {
 					continue
 				}
 

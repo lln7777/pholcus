@@ -4,12 +4,15 @@ import (
 	"math"
 	"sync"
 	"time"
+	"log"
+	"database/sql"
 
 	"github.com/henrylee2cn/pholcus/app/downloader/request"
 	"github.com/henrylee2cn/pholcus/app/scheduler"
 	"github.com/henrylee2cn/pholcus/common/util"
 	"github.com/henrylee2cn/pholcus/logs"
 	"github.com/henrylee2cn/pholcus/runtime/status"
+	"github.com/henrylee2cn/pholcus/common/mysql"
 )
 
 const (
@@ -264,7 +267,128 @@ func (self *Spider) RequestPush(req *request.Request) {
 }
 
 func (self *Spider) RequestPull() *request.Request {
+	req := self.RequestPullFromDb()
+	if req != nil {
+		return req
+	}
+
 	return self.reqMatrix.Pull()
+}
+
+//下次检测数据库中有更新URL的时间
+var nextDbCheck time.Time
+
+var createTableSql = `
+CREATE TABLE IF NOT EXISTS reloads (
+  id int(10) unsigned NOT NULL AUTO_INCREMENT,
+  url varchar(1024) NOT NULL,
+  spider varchar(64) NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_spider (spider)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8;
+`
+
+// 查询数据库中是否有待请求队列优先解决
+func (self *Spider) RequestPullFromDb() *request.Request {
+	// 判断数据库中是否有待请求队列优先解决
+	if nextDbCheck.IsZero() || time.Now().After(nextDbCheck) {
+		db, _ := mysql.DB()
+		if nextDbCheck.IsZero() {
+			//首次加载判断表是否存在
+			db.Exec(createTableSql)
+		}
+
+		// 下次检查时间
+		nextDbCheck = time.Now().Add(time.Second * 3)
+
+		var id int
+		var url, spd string
+		var err error
+
+		err = db.QueryRow("SELECT * FROM reloads WHERE spider = ?", self.Name).Scan(&id, &url, &spd)
+		if err != nil && err != sql.ErrNoRows {
+			logs.Log.Warning(" * func (self *Spider) RequestPullFromDb() *request.Request{} 数据库查询失败\n")
+			log.Println(err)
+			return nil
+		}
+		if err != nil && err == sql.ErrNoRows {
+			return nil
+		}
+
+		req := &request.Request{
+			Url:  url,
+			Rule: "Result",
+		}
+
+		err = req.SetSpiderName(self.GetName()).
+			SetEnableCookie(self.GetEnableCookie()).
+			Prepare()
+		if err != nil {
+			logs.Log.Warning(" * func (self *Spider) RequestPullFromDb() *request.Request{} 爬虫准备失败\n")
+			log.Println(err)
+			return nil
+		}
+
+		_, err = db.Exec("DELETE FROM reloads WHERE id = ?", id)
+		if err != nil {
+			logs.Log.Warning(" * func (self *Spider) RequestPullFromDb() *request.Request{} 数据库删除失败\n")
+			log.Println(err)
+			return nil
+		}
+
+		req.SetReferer(url)
+		logs.Log.Informational(" * 添加远程爬虫请求 %s, %s\n", self.GetName(), url)
+		log.Printf("添加远程爬虫请求 %s, %s", self.GetName(), url)
+
+		// 标记该URL
+		premiumUrls.Add(url)
+
+		// 10秒后把数据存到数据库中，防止因为数据长期不够不刷到数据库中
+		//defer time.AfterFunc(time.Second*15, func() {
+		//	logs.Log.Informational(" * 手动输出数据到表中 %s\n", self.GetName())
+		//	log.Printf("手动输出数据到表中：%s\n", self.GetName())
+		//	self.TryFlushSuccess()
+		//})
+		return req
+	}
+
+	return nil
+}
+
+// 遇到这些URL时立即存入数据库
+type urlList struct {
+	sync.Mutex
+	list map[string]struct{}
+}
+
+var premiumUrls *urlList
+
+func (u *urlList) Add(url string) {
+	u.Lock()
+	defer u.Unlock()
+
+	if _, ok := u.list[url]; !ok {
+		u.list[url] = struct{}{}
+	}
+}
+
+func (u *urlList) CheckThenRemove(url string) bool {
+	u.Lock()
+	defer u.Unlock()
+
+	_, ok := u.list[url]
+	if !ok {
+		return false
+	}
+
+	delete(u.list, url)
+
+	return true
+}
+
+// 遇到这些URL时立即存入数据库
+func (self *Spider) AllowDelayDumpData(url string) bool {
+	return !premiumUrls.CheckThenRemove(url)
 }
 
 func (self *Spider) RequestUse() {
@@ -289,6 +413,9 @@ func (self *Spider) TryFlushFailure() {
 
 // 开始执行蜘蛛
 func (self *Spider) Start() {
+	//初始化远程请求URL列表
+	premiumUrls = &urlList{list: map[string]struct{}{}}
+
 	defer func() {
 		if p := recover(); p != nil {
 			logs.Log.Error(" *     Panic  [root]: %v\n", p)
