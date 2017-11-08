@@ -267,10 +267,8 @@ func (self *Spider) RequestPush(req *request.Request) {
 }
 
 func (self *Spider) RequestPull() *request.Request {
-	req := self.RequestPullFromDb()
-	if req != nil {
-		return req
-	}
+	// 检查是否有远程提交的请求优先处理
+	self.CheckPremiumRequest()
 
 	return self.reqMatrix.Pull()
 }
@@ -289,7 +287,7 @@ CREATE TABLE IF NOT EXISTS reloads (
 `
 
 // 查询数据库中是否有待请求队列优先解决
-func (self *Spider) RequestPullFromDb() *request.Request {
+func (self *Spider) CheckPremiumRequest() *request.Request {
 	// 判断数据库中是否有待请求队列优先解决
 	if nextDbCheck.IsZero() || time.Now().After(nextDbCheck) {
 		db, _ := mysql.DB()
@@ -307,7 +305,7 @@ func (self *Spider) RequestPullFromDb() *request.Request {
 
 		err = db.QueryRow("SELECT * FROM reloads WHERE spider = ?", self.Name).Scan(&id, &url, &spd)
 		if err != nil && err != sql.ErrNoRows {
-			logs.Log.Warning(" * func (self *Spider) RequestPullFromDb() *request.Request{} 数据库查询失败\n")
+			logs.Log.Warning(" * func (self *Spider) CheckPremiumRequest() *request.Request{} 数据库查询失败\n")
 			log.Println(err)
 			return nil
 		}
@@ -315,23 +313,26 @@ func (self *Spider) RequestPullFromDb() *request.Request {
 			return nil
 		}
 
+		// TODO 如果原爬虫有设置其他请求头则可能暂时无法使用
 		req := &request.Request{
-			Url:  url,
-			Rule: "Result",
+			Url:        url,
+			Rule:       "Result",
+			Reloadable: true,
+			Priority:   math.MaxInt32,
 		}
 
 		err = req.SetSpiderName(self.GetName()).
 			SetEnableCookie(self.GetEnableCookie()).
 			Prepare()
 		if err != nil {
-			logs.Log.Warning(" * func (self *Spider) RequestPullFromDb() *request.Request{} 爬虫准备失败\n")
+			logs.Log.Warning(" * func (self *Spider) CheckPremiumRequest() *request.Request{} 爬虫准备失败\n")
 			log.Println(err)
 			return nil
 		}
 
 		_, err = db.Exec("DELETE FROM reloads WHERE id = ?", id)
 		if err != nil {
-			logs.Log.Warning(" * func (self *Spider) RequestPullFromDb() *request.Request{} 数据库删除失败\n")
+			logs.Log.Warning(" * func (self *Spider) CheckPremiumRequest() *request.Request{} 数据库删除失败\n")
 			log.Println(err)
 			return nil
 		}
@@ -343,12 +344,10 @@ func (self *Spider) RequestPullFromDb() *request.Request {
 		// 标记该URL
 		premiumUrls.Add(url)
 
-		// 10秒后把数据存到数据库中，防止因为数据长期不够不刷到数据库中
-		//defer time.AfterFunc(time.Second*15, func() {
-		//	logs.Log.Informational(" * 手动输出数据到表中 %s\n", self.GetName())
-		//	log.Printf("手动输出数据到表中：%s\n", self.GetName())
-		//	self.TryFlushSuccess()
-		//})
+		go func() {
+			// 使用公开方法将请求压栈并使用公开方法出栈（直接返回该请求会导致计数器错误）
+			self.RequestPush(req)
+		}()
 		return req
 	}
 
