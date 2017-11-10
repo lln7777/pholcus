@@ -147,6 +147,15 @@ func (self *Request) Unique() string {
 	return self.unique
 }
 
+// 请求的唯一识别码，外部计算写入
+func (self *Request) SetUnique(s string) bool {
+	if self.unique == "" {
+		self.unique = s
+		return true
+	}
+	return false
+}
+
 // 获取副本
 func (self *Request) Copy() *Request {
 	reqcopy := new(Request)
