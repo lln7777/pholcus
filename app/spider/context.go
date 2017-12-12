@@ -315,11 +315,14 @@ func (self *Context) Error(ruleName ...string) interface{} {
 		}
 		return nil
 	}
-	if rule.ErrorFunc == nil {
-		logs.Log.Error("蜘蛛 %s 的规则 %s 未定义ErrorFunc", self.spider.GetName(), ruleName[0])
-		return nil
+
+	// 如果ErrorFunc存在，那么执行
+	if rule.ErrorFunc != nil {
+		// logs.Log.Error("蜘蛛 %s 的规则 %s 未定义ErrorFunc", self.spider.GetName(), ruleName[0])
+		// return nil
+		rule.ErrorFunc(self)
 	}
-	rule.ErrorFunc(self)
+
 	return self
 }
 
